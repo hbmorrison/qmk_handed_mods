@@ -2,8 +2,8 @@
 
 // Declare internal functions.
 
-void process_key_press_handed_mods(uint16_t, keyrecord_t *);
-void process_key_release_handed_mods(void);
+void process_key_press(uint16_t, keyrecord_t *);
+void process_key_release(void);
 bool get_key_handedness(keypos_t key);
 
 // State of the left and right modifiers when handedness is being enforced.
@@ -33,7 +33,7 @@ bool process_record_handed_mods(uint16_t keycode, keyrecord_t *record) {
 // keycode, based on the handedness of the modifiers and whether the keycode is
 // on the left or right side of the keyboard.
 
-void process_key_press_handed_mods(uint16_t keycode, keyrecord_t *record) {
+void process_key_press(uint16_t keycode, keyrecord_t *record) {
   uint8_t mod_state = get_mods();
   uint8_t os_mod_state = get_oneshot_mods();
 
@@ -66,13 +66,12 @@ void process_key_press_handed_mods(uint16_t keycode, keyrecord_t *record) {
 
     if (os_mod_state & RH_MOD_BITS)
       del_oneshot_mods(RH_MOD_BITS);
-    break;
   }
 }
 
 // Restore any modifiers that were temporarily removed on press.
 
-void process_key_release_handed_mods() {
+void process_key_release() {
   if (lh_mod_state) {
     lh_mod_state = 0;
     add_mods(lh_mod_state);
