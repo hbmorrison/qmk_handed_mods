@@ -2,5 +2,11 @@
     "module_name": "Handed Mods",
     "maintainer": "hbmorrison",
     "license": "Apache-2.0",
-    "url": "https://github.com/hbmorrison/qmk_handed_mods.git"
+    "url": "https://github.com/hbmorrison/qmk_handed_mods.git",
+    "keycodes": [
+        { "key": "HANDED_MODS_SHIFT",   "aliases": ["HM_SFT"] },
+        { "key": "HANDED_MODS_CONTROL", "aliases": ["HM_CTL"] },
+        { "key": "HANDED_MODS_ALT",     "aliases": ["HM_ALT"] },
+        { "key": "HANDED_MODS_GUI",     "aliases": ["HM_GUI"] }
+    ]
 }

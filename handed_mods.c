@@ -2,96 +2,300 @@
 
 // Declare internal functions.
 
-void process_key_press(uint16_t, keyrecord_t *);
-void process_key_release(void);
-bool get_key_handedness(keypos_t key);
+void hm_process_handed_mod_key(uint16_t keycode, keyrecord_t *record);
+void hm_process_handed_mod_press(uint16_t keycode, keyrecord_t *record);
+void hm_process_handed_mod_release(uint16_t keycode, keyrecord_t *record);
+void hm_process_other_key(uint16_t keycode, keyrecord_t *record);
+void hm_process_other_press(uint8_t);
+void hm_process_oneshots_on_other_press(keypos_t);
+void hm_process_other_release(void);
+bool hm_is_interrupted(uint16_t);
+void hm_set_interrupts_for(uint8_t);
+void hm_reset_interrupt(uint16_t);
+uint8_t hm_mod_bit(uint16_t);
 
-// State of the left and right modifiers when handedness is being enforced.
+// As the handed modifier keys are pressed, the mod bits associated with each
+// key are added to these mod masks, and then removed when the handed modifier
+// key is released.
 
-static uint16_t lh_mod_state = false;
-static uint16_t rh_mod_state = false;
+static uint8_t hm_left_mods          = 0;
+static uint8_t hm_left_oneshot_mods  = 0;
+static uint8_t hm_right_mods         = 0;
+static uint8_t hm_right_oneshot_mods = 0;
 
-// Enforce handed modifiers.
+// When another key is pressed, the appropriate handed modifier bit masks are
+// applied as actual modifiers, but only those mod bits that are not currently
+// applied by other means. There may be other keys on the keymap with modifiers
+// applied in the usual way, e.g. LCTL(KC_C). These mod masks store the mod bits
+// that have been applied when a key is pressed so that the correct modifiers
+// can be removed when the key is released.
+
+static uint8_t hm_applied_mods = 0;
+static uint8_t hm_applied_oneshot_mods = 0;
+
+// When a handed modifier key is pressed, its interrupted state is cleared. When
+// another key is pressed while the handed modifier key remains pressed, its
+// interrupted state is set to true. If the handed modifier key is released and
+// the interrupted state is still false, it is converted into a oneshot handed
+// modifier.
+
+static bool hm_sft_interrupted = false;
+static bool hm_ctl_interrupted = false;
+static bool hm_alt_interrupted = false;
+static bool hm_gui_interrupted = false;
+
+// Determine how key events will affect and be influenced by the handed
+// modifiers.
 
 bool process_record_handed_mods(uint16_t keycode, keyrecord_t *record) {
 
-  // Do not process keys that should be ignored.
+  // If the key is to be ignored then return and allow the key to continue being
+  // processed elsewhere.
 
-  if (! is_handed_mods_ignored_key(keycode)) {
-    if (record->event.pressed)
-      process_key_press(keycode, record);
-    else
-      process_key_release();
+  if (handed_mods_is_ignored_key(keycode))
+    return true;
+
+  if (handed_mods_is_reset_key(keycode)) {
+    hm_left_mods = 0;
+    hm_left_oneshot_mods = 0;
+    hm_right_mods = 0;
+    hm_right_oneshot_mods = 0;
+    if (hm_applied_mods) {
+      del_mods(hm_applied_mods);
+      hm_applied_mods = 0;
+    }
+    if (hm_applied_oneshot_mods) {
+      del_mods(hm_applied_oneshot_mods);
+      hm_applied_oneshot_mods = 0;
+    }
+    return true;
   }
 
-  // Always return true as this process_...() function does not issue keys.
+  // Otherwise, determine how to process the key event.
 
-  return true;
+  switch (keycode) {
+    case HM_SFT:
+    case HM_CTL:
+    case HM_ALT:
+    case HM_GUI:
+      hm_process_handed_mod_key(keycode, record);
+      return false;
+    default:
+      hm_process_other_key(keycode, record);
+      return true;
+  }
 }
 
-// Process whether modifiers should be temporarily removed for the given
-// keycode, based on the handedness of the modifiers and whether the keycode is
-// on the left or right side of the keyboard.
+// Process handed modifier key events.
 
-void process_key_press(uint16_t keycode, keyrecord_t *record) {
-  uint8_t mod_state = get_mods();
-  uint8_t os_mod_state = get_oneshot_mods();
+void hm_process_handed_mod_key(uint16_t keycode, keyrecord_t *record) {
+  if (record->event.pressed)
+    hm_process_handed_mod_press(keycode, record);
+  else
+    hm_process_handed_mod_release(keycode, record);
+}
 
-  // Check whether the key press is on the left or right side of the keyboard.
+// When a handed modifier key is pressed, add its associated mod bit to the
+// correct mod mask.
 
-  if (is_key_on_left_side(record->event.key)) {
+void hm_process_handed_mod_press(uint16_t keycode, keyrecord_t *record) {
 
-    // For a key on the left side, check if any left modifiers are currently
-    // active. If there are, make a note of them and deactivate them.
+  // Get the mod bit associated with the handed modifier.
 
-    lh_mod_state = mod_state & LH_MOD_BITS;
-    if (lh_mod_state)
-      del_mods(LH_MOD_BITS);
+  uint8_t bit = hm_mod_bit(keycode);
 
-    // Remove any left oneshot modifiers since this key press effectively "uses
-    // them up" even if the modifier does not end up being applied.
+  // Add the mod bit to the correct mask and remove the mod bit from the
+  // opposite side.
 
-    if (os_mod_state & LH_MOD_BITS)
-      del_oneshot_mods(LH_MOD_BITS);
+  if (handed_mods_is_left_key(record->event.key)) {
+    hm_left_mods |= bit;
+    hm_right_mods &= ~bit;
   } else {
+    hm_right_mods |= bit;
+    hm_left_mods &= ~bit;
+  }
 
-    // For a key on the right side, make a note of any right modifiers and
-    // deactivate them.
+  // Set the state of the handed modifier to not interrupted.
 
-    rh_mod_state = mod_state & RH_MOD_BITS;
-    if (rh_mod_state)
-      del_mods(RH_MOD_BITS);
+  hm_reset_interrupt(keycode);
+}
 
-    // Remove any right oneshot modifiers.
+// When a handed modifier key is released, remove its mod bit from the correct
+// mod masks.
 
-    if (os_mod_state & RH_MOD_BITS)
-      del_oneshot_mods(RH_MOD_BITS);
+void hm_process_handed_mod_release(uint16_t keycode, keyrecord_t *record) {
+
+  // Get the mod bit associated with the handed modifier.
+
+  uint8_t bit = hm_mod_bit(keycode);
+
+  // Remove the mod bit from the left or right mod mask.
+
+  if (handed_mods_is_left_key(record->event.key))
+    hm_left_mods &= ~bit;
+  else
+    hm_right_mods &= ~bit;
+
+  // If no other key has been pressed while the handed modifier key has remained
+  // pressed, then treat the handed modifier key event as a oneshot.
+
+  if (! hm_is_interrupted(keycode)) {
+    if (handed_mods_is_left_key(record->event.key))
+      hm_left_oneshot_mods |= bit;
+    else
+      hm_right_oneshot_mods |= bit;
   }
 }
 
-// Restore any modifiers that were temporarily removed on press.
+// Process other key events using the correct set of handed modifier bits.
 
-void process_key_release() {
-  if (lh_mod_state) {
-    lh_mod_state = 0;
-    add_mods(lh_mod_state);
+void hm_process_other_key(uint16_t keycode, keyrecord_t *record) {
+
+  // Process key releases.
+
+  if (! record->event.pressed) {
+    hm_process_other_release();
+    return;
   }
-  if (rh_mod_state) {
-    rh_mod_state = 0;
-    add_mods(rh_mod_state);
+
+  // If the key event is from the left side of the keyboard, apply the right
+  // handed modifiers to it, and vice versa.
+
+  if (handed_mods_is_left_key(record->event.key))
+    hm_process_other_press(hm_right_mods);
+  else
+    hm_process_other_press(hm_left_mods);
+
+  hm_process_oneshots_on_other_press(record->event.key);
+}
+
+// Apply the given modifiers so that they affect the other key press when it is
+// processed later on.
+
+void hm_process_other_press(uint8_t mods) {
+
+  // Mark the currently active handed modifiers as interrupted.
+
+  hm_set_interrupts_for(mods);
+
+  // The active handed modifiers are only applied if the modifiers are not
+  // already applied by some other means, so remove all of the currently applied
+  // modifiers from the mod mask and apply the remaining modifiers.
+
+  hm_applied_mods = mods & ~get_mods();
+  add_mods(hm_applied_mods);
+}
+
+void hm_process_oneshots_on_other_press(keypos_t key) {
+
+  // Just as with the standard modifiers, oneshot modifiers are only applied if
+  // they are not already applied by some other means, so the same thing is done
+  // here.
+  //
+  // Also, if the other key press is on the left side, then all right side
+  // oneshot mods are cleared, and vice versa. This is to avoid "hanging
+  // oneshots", which can happen when oneshot modifiers stay active but unused
+  // while there is activity one side of the keyboard (e.g. typing "abstract" on
+  // Colemak DH or "stewardess" on QWERTY), then are unexpectedly applied when a
+  // key on the other side is pressed afterwards.
+
+  if (handed_mods_is_left_key(key)) {
+    hm_applied_oneshot_mods = hm_right_oneshot_mods & ~get_oneshot_mods();
+    hm_left_oneshot_mods = 0;
+  } else {
+    hm_applied_oneshot_mods = hm_left_oneshot_mods & ~get_oneshot_mods();
+    hm_right_oneshot_mods = 0;
+  }
+
+  add_oneshot_mods(hm_applied_oneshot_mods);
+}
+
+// Once the other key is released, remove the previously applied modifiers.
+
+void hm_process_other_release() {
+
+  // Only remove the modifiers that were previously applied.
+
+  if (hm_applied_mods) {
+    del_mods(hm_applied_mods);
+    hm_applied_mods = 0;
+  }
+
+  // Any oneshot modifiers that were applied when this key was pressed will have
+  // been removed by QMK. However, the mod bits that were added to the oneshot
+  // mod masks also need to be removed, so that they are not applied to a future
+  // key event. The applied oneshot modifiers are removed from both the left and
+  // right oneshot mod masks to avoid hanging oneshots.
+
+  if (hm_applied_oneshot_mods) {
+    hm_left_oneshot_mods  &= ~hm_applied_oneshot_mods;
+    hm_right_oneshot_mods &= ~hm_applied_oneshot_mods;
+    hm_applied_oneshot_mods = 0;
   }
 }
 
-// User defined function that will return true if the given keycode should be
-// ignored by the handed modifier processing.
+// Return the mod bits associated with the custom key codes defined by this
+// module.
 
-__attribute__((weak)) bool is_handed_mods_ignored_key(uint16_t keycode) {
+uint8_t hm_mod_bit(uint16_t keycode) {
+  switch (keycode) {
+    case HM_SFT: return SFT_MOD_BIT;
+    case HM_CTL: return CTL_MOD_BIT;
+    case HM_ALT: return ALT_MOD_BIT;
+    case HM_GUI: return GUI_MOD_BIT;
+  }
+  return 0;
+}
+
+bool hm_is_interrupted(uint16_t keycode) {
+  switch (keycode) {
+    case HM_SFT: return hm_sft_interrupted;
+    case HM_CTL: return hm_ctl_interrupted;
+    case HM_ALT: return hm_alt_interrupted;
+    case HM_GUI: return hm_gui_interrupted;
+  }
   return false;
 }
 
-// User overridable function that returns true if the given key is on the left
-// side of the keyboard and false if it is on the right side of the keyboard.
+void hm_set_interrupts_for(uint8_t bits) {
+  hm_sft_interrupted = (bits & SFT_MOD_BIT) > 0;
+  hm_ctl_interrupted = (bits & CTL_MOD_BIT) > 0;
+  hm_alt_interrupted = (bits & ALT_MOD_BIT) > 0;
+  hm_gui_interrupted = (bits & GUI_MOD_BIT) > 0;
+}
 
-__attribute__((weak)) bool is_key_on_left_side(keypos_t key) {
+void hm_reset_interrupt(uint16_t keycode) {
+  switch (keycode) {
+    case HM_SFT: hm_sft_interrupted = false; break;
+    case HM_CTL: hm_ctl_interrupted = false; break;
+    case HM_ALT: hm_alt_interrupted = false; break;
+    case HM_GUI: hm_gui_interrupted = false; break;
+  }
+}
+
+// This function can be overriden in keymap.c to return true if the given
+// keycode should be ignored during the handed modifier key processing.
+
+__attribute__((weak)) bool handed_mods_is_ignored_key(uint16_t keycode) {
+  return false;
+}
+
+__attribute__((weak)) bool handed_mods_is_reset_key(uint16_t keycode) {
+  switch (keycode) {
+    case KC_ESC:
+      return true;
+  }
+  return false;
+}
+
+// By default, this module assumes that keys on the left side of the keyboard
+// are found in the lower half of the matrix, but some keyboards are wired
+// differently. For example, on the ziplzalp keyboard, keys on the left side are
+// found in even rows in the matrix and keys on the right side are found in odd
+// rows. This function can be overriden in keymap.c to handle different keyboard
+// matrix layouts. So, in the case of zilpzalp, this function should be
+// overriden to return "(key.row % 2) == 0".
+
+__attribute__((weak)) bool handed_mods_is_left_key(keypos_t key) {
   return key.row < MATRIX_ROWS / 2;
 }
