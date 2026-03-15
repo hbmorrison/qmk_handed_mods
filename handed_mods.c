@@ -150,8 +150,8 @@ void handed_mods_process_affected_key(uint16_t keycode, keyrecord_t *record) {
     // Remove the shift modifier if it appears on its own in the mod mask and is
     // about to be applied to a key that should not be shifted.
 
-    if ((mods & ~SFT_MOD_BIT) && handed_mods_ignore_bare_shift(keycode))
-      mods &= ~SFT_MOD_BIT;
+    if ((mods & ~SFT_MOD_BIT) == 0 && handed_mods_ignore_bare_shift(keycode))
+      mods = 0;
 
     // Set the modifiers so that they will only apply to the this key press.
 
