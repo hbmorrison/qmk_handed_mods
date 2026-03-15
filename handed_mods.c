@@ -2,13 +2,14 @@
 
 // Declare internal functions.
 
-void hm_process_handed_mod_key(uint16_t keycode, keyrecord_t *record);
-void hm_process_handed_mod_press(uint16_t keycode, keyrecord_t *record);
-void hm_process_handed_mod_release(uint16_t keycode, keyrecord_t *record);
-void hm_process_other_key(uint16_t keycode, keyrecord_t *record);
+void hm_process_handed_mod_key(uint16_t, keyrecord_t *);
+void hm_process_handed_mod_press(uint16_t, keyrecord_t *);
+void hm_process_handed_mod_release(uint16_t, keyrecord_t *);
+void hm_process_other_key(uint16_t, keyrecord_t *);
 void hm_process_other_press(uint8_t);
 void hm_process_oneshots_on_other_press(keypos_t);
 void hm_process_other_release(void);
+bool hm_is_hold_action(uint16_t, keyrecord_t *);
 bool hm_is_interrupted(uint16_t);
 void hm_set_interrupts_for(uint8_t);
 void hm_reset_interrupt(uint16_t);
@@ -55,11 +56,10 @@ bool process_record_handed_mods(uint16_t keycode, keyrecord_t *record) {
   if (handed_mods_is_ignored_key(keycode))
     return true;
 
+  // If the key is a reset key, remove any applied mods and reset all of the mod
+  // masks.
+
   if (handed_mods_is_reset_key(keycode)) {
-    hm_left_mods = 0;
-    hm_left_oneshot_mods = 0;
-    hm_right_mods = 0;
-    hm_right_oneshot_mods = 0;
     if (hm_applied_mods) {
       del_mods(hm_applied_mods);
       hm_applied_mods = 0;
@@ -68,6 +68,10 @@ bool process_record_handed_mods(uint16_t keycode, keyrecord_t *record) {
       del_mods(hm_applied_oneshot_mods);
       hm_applied_oneshot_mods = 0;
     }
+    hm_left_mods = 0;
+    hm_left_oneshot_mods = 0;
+    hm_right_mods = 0;
+    hm_right_oneshot_mods = 0;
     return true;
   }
 
@@ -150,23 +154,28 @@ void hm_process_handed_mod_release(uint16_t keycode, keyrecord_t *record) {
 // Process other key events using the correct set of handed modifier bits.
 
 void hm_process_other_key(uint16_t keycode, keyrecord_t *record) {
+  if (record->event.pressed) {
 
-  // Process key releases.
+    // Do not continue if this is a hold action on a mod-tap or layer-tap key.
 
-  if (! record->event.pressed) {
+    if (hm_is_hold_action(keycode, record))
+      return;
+
+    // If the key event is from the left side of the keyboard, apply the right
+    // handed modifiers to it, and vice versa.
+
+    if (handed_mods_is_left_key(record->event.key))
+      hm_process_other_press(hm_right_mods);
+    else
+      hm_process_other_press(hm_left_mods);
+
+    hm_process_oneshots_on_other_press(record->event.key);
+  } else {
+
+    // Process key releases.
+
     hm_process_other_release();
-    return;
   }
-
-  // If the key event is from the left side of the keyboard, apply the right
-  // handed modifiers to it, and vice versa.
-
-  if (handed_mods_is_left_key(record->event.key))
-    hm_process_other_press(hm_right_mods);
-  else
-    hm_process_other_press(hm_left_mods);
-
-  hm_process_oneshots_on_other_press(record->event.key);
 }
 
 // Apply the given modifiers so that they affect the other key press when it is
@@ -189,53 +198,37 @@ void hm_process_other_press(uint8_t mods) {
 void hm_process_oneshots_on_other_press(keypos_t key) {
 
   // Just as with the standard modifiers, oneshot modifiers are only applied if
-  // they are not already applied by some other means, so the same thing is done
-  // here.
-  //
-  // Also, if the other key press is on the left side, then all right side
-  // oneshot mods are cleared, and vice versa. This is to avoid "hanging
-  // oneshots", which can happen when oneshot modifiers stay active but unused
-  // while there is activity one side of the keyboard (e.g. typing "abstract" on
-  // Colemak DH or "stewardess" on QWERTY), then are unexpectedly applied when a
-  // key on the other side is pressed afterwards.
+  // they are not already applied by some other means. So, work out which
+  // oneshot mods can be applied, then clear those mods from the mod mask that
+  // they came from, since they have been "used up" by this other key press.
 
   if (handed_mods_is_left_key(key)) {
     hm_applied_oneshot_mods = hm_right_oneshot_mods & ~get_oneshot_mods();
-    hm_left_oneshot_mods = 0;
+    hm_right_oneshot_mods &= ~hm_applied_oneshot_mods;
   } else {
     hm_applied_oneshot_mods = hm_left_oneshot_mods & ~get_oneshot_mods();
-    hm_right_oneshot_mods = 0;
+    hm_left_oneshot_mods &= ~hm_applied_oneshot_mods;
   }
 
-  add_oneshot_mods(hm_applied_oneshot_mods);
-}
-
-// Once the other key is released, remove the previously applied modifiers.
-
-void hm_process_other_release() {
-
-  // Only remove the modifiers that were previously applied.
-
-  if (hm_applied_mods) {
-    del_mods(hm_applied_mods);
-    hm_applied_mods = 0;
-  }
-
-  // Any oneshot modifiers that were applied when this key was pressed will have
-  // been removed by QMK. However, the mod bits that were added to the oneshot
-  // mod masks also need to be removed, so that they are not applied to a future
-  // key event. The applied oneshot modifiers are removed from both the left and
-  // right oneshot mod masks to avoid hanging oneshots.
+  // Apply any oneshot mods that can be applied, then immediately clear them
+  // so they cannot be applied again by a subsequent key press.
 
   if (hm_applied_oneshot_mods) {
-    hm_left_oneshot_mods  &= ~hm_applied_oneshot_mods;
-    hm_right_oneshot_mods &= ~hm_applied_oneshot_mods;
+    add_oneshot_mods(hm_applied_oneshot_mods);
     hm_applied_oneshot_mods = 0;
   }
 }
 
-// Return the mod bits associated with the custom key codes defined by this
-// module.
+// Once the other key is released, remove any previously applied modifiers.
+
+void hm_process_other_release() {
+  if (hm_applied_mods) {
+    del_mods(hm_applied_mods);
+    hm_applied_mods = 0;
+  }
+}
+
+// Return the mod bits associated with the custom keys defined by this module.
 
 uint8_t hm_mod_bit(uint16_t keycode) {
   switch (keycode) {
@@ -247,6 +240,20 @@ uint8_t hm_mod_bit(uint16_t keycode) {
   return 0;
 }
 
+// Return true if the key being pressed is a mod-tap or layer-tap key, and the
+// key is in a hold state.
+
+bool hm_is_hold_action(uint16_t keycode, keyrecord_t *record) {
+  switch (keycode) {
+    case QK_MOD_TAP ... QK_MOD_TAP_MAX:
+    case QK_LAYER_TAP ... QK_LAYER_TAP_MAX:
+      return ! record->tap.count;
+  }
+  return false;
+}
+
+// Return the stored interrupted state for the given custom key.
+
 bool hm_is_interrupted(uint16_t keycode) {
   switch (keycode) {
     case HM_SFT: return hm_sft_interrupted;
@@ -257,12 +264,18 @@ bool hm_is_interrupted(uint16_t keycode) {
   return false;
 }
 
+// Set the stored interrupt state for each modifier that is active in the given
+// bit mask.
+
 void hm_set_interrupts_for(uint8_t bits) {
   hm_sft_interrupted = (bits & SFT_MOD_BIT) > 0;
   hm_ctl_interrupted = (bits & CTL_MOD_BIT) > 0;
   hm_alt_interrupted = (bits & ALT_MOD_BIT) > 0;
   hm_gui_interrupted = (bits & GUI_MOD_BIT) > 0;
 }
+
+// Clear the stored interrupt state for the modifier associated with the given
+// custom keycode.
 
 void hm_reset_interrupt(uint16_t keycode) {
   switch (keycode) {
@@ -279,6 +292,10 @@ void hm_reset_interrupt(uint16_t keycode) {
 __attribute__((weak)) bool handed_mods_is_ignored_key(uint16_t keycode) {
   return false;
 }
+
+// This function can be overriden in keymap.c to return true if the given
+// keycode should reset the state of all handed modifiers when it is pressed.
+// Defaults to the esc key.
 
 __attribute__((weak)) bool handed_mods_is_reset_key(uint16_t keycode) {
   switch (keycode) {
