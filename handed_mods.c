@@ -9,6 +9,15 @@ bool handed_mods_get_interrupt(uint16_t);
 void handed_mods_set_interrupt(uint8_t);
 void handed_mods_clear_interrupt(uint16_t);
 uint8_t handed_mods_get_mod_bit(uint16_t);
+bool handed_mods_ignore_bare_shift(uint16_t);
+bool handed_mods_is_ignored_key(uint16_t);
+bool handed_mods_is_reset_key(uint16_t);
+bool handed_mods_is_left_key(keypos_t);
+bool handed_mods_oneshot_timer_exceeded(void);
+
+// Declare a timer for the oneshot modifiers.
+
+static uint16_t handed_mods_oneshot_timer = 0;
 
 // As handed modifier keys are pressed, the mod bits associated with each key
 // are added to these mod masks, and then removed when the handed modifier key
@@ -70,6 +79,17 @@ bool process_record_handed_mods(uint16_t keycode, keyrecord_t *record) {
   return true;
 }
 
+// Clear any oneshot mods at the end of the scan if the oneshot timout has been
+// exceeded.
+
+void housekeeping_task_handed_mods(void) {
+  if (handed_mods_oneshot_timer_exceeded()) {
+    handed_mods_oneshot_timer = 0;
+    left_oneshot_mask = 0;
+    right_oneshot_mask = 0;
+  }
+}
+
 // Process key actions for handed modifier keys.
 
 void handed_mods_process_handed_mod_key(uint16_t keycode, keyrecord_t *record) {
@@ -112,6 +132,12 @@ void handed_mods_process_handed_mod_key(uint16_t keycode, keyrecord_t *record) {
         left_oneshot_mask &= ~bit;
         right_oneshot_mask |= bit;
       }
+
+      // Set the oneshot timer to the current time.
+
+#     if (defined(ONESHOT_TIMEOUT) && (ONESHOT_TIMEOUT > 0))
+      handed_mods_oneshot_timer = timer_read();
+#     endif
     }
   }
 }
@@ -141,11 +167,15 @@ void handed_mods_process_affected_key(uint16_t keycode, keyrecord_t *record) {
 
     // Clear the oneshot modifiers so that they will not be applied to
     // subsequent key presses. Both sets of oneshot modifiers are cleared
-    // because any key press should clear all oneshot modifiers, even if
-    // the modifiers are not going to be applied to the key.
+    // because key presses should clear all oneshot modifiers, even if the
+    // modifiers are not going to be applied to the key.
 
     left_oneshot_mask = 0;
     right_oneshot_mask = 0;
+
+    // Clear the oneshot modifier timer.
+
+    handed_mods_oneshot_timer = 0;
 
     // Remove the shift modifier if it appears on its own in the mod mask and is
     // about to be applied to a key that should not be shifted.
@@ -155,7 +185,8 @@ void handed_mods_process_affected_key(uint16_t keycode, keyrecord_t *record) {
 
     // Set the modifiers so that they will only apply to the this key press.
 
-    register_weak_mods(mods);
+    if (mods)
+      register_weak_mods(mods);
 
     // Indicate that this key press has interrupted the currently active handed
     // modifiers.
@@ -219,6 +250,17 @@ bool handed_mods_is_hold_action(uint16_t keycode, keyrecord_t *record) {
   }
   return false;
 }
+
+#if (defined(ONESHOT_TIMEOUT) && (ONESHOT_TIMEOUT > 0))
+bool handed_mods_oneshot_timer_exceeded(void) {
+  return handed_mods_oneshot_timer > 0 \
+   && TIMER_DIFF_16(timer_read(), handed_mods_oneshot_timer) >= ONESHOT_TIMEOUT;
+}
+#else
+bool handed_mods_oneshot_timer_exceeded(void) {
+  return false;
+}
+#endif
 
 // Returns true if the shift modifier on its own should not be applied to the
 // given key. This is used to prevent accidental shifts in higher layers
