@@ -147,6 +147,12 @@ void handed_mods_process_affected_key(uint16_t keycode, keyrecord_t *record) {
     left_oneshot_mask = 0;
     right_oneshot_mask = 0;
 
+    // Remove the shift modifier if it appears on its own in the mod mask and is
+    // about to be applied to a key that should not be shifted.
+
+    if ((mods & ~SFT_MOD_BIT) && handed_mods_ignore_bare_shift(keycode))
+      mods &= ~SFT_MOD_BIT;
+
     // Set the modifiers so that they will only apply to the this key press.
 
     register_weak_mods(mods);
@@ -210,6 +216,37 @@ bool handed_mods_is_hold_action(uint16_t keycode, keyrecord_t *record) {
     case QK_MOD_TAP ... QK_MOD_TAP_MAX:
     case QK_LAYER_TAP ... QK_LAYER_TAP_MAX:
       return ! record->tap.count;
+  }
+  return false;
+}
+
+// Returns true if the shift modifier on its own should not be applied to the
+// given key. This is used to prevent accidental shifts in higher layers
+// producing unexpected symbols. By default the comma, full stop and slash
+// keycodes are not included, so that they can be shifted to issue less than,
+// greater than and question mark when they appear in the base layer.
+
+__attribute__((weak)) bool handed_mods_ignore_bare_shift(uint16_t keycode) {
+  switch (keycode) {
+    case KC_GRAVE:
+    case KC_1:
+    case KC_2:
+    case KC_3:
+    case KC_4:
+    case KC_5:
+    case KC_6:
+    case KC_7:
+    case KC_8:
+    case KC_9:
+    case KC_0:
+    case KC_MINUS:
+    case KC_EQUAL:
+    case KC_LEFT_BRACKET:
+    case KC_RIGHT_BRACKET:
+    case KC_BACKSLASH:
+    case KC_SEMICOLON:
+    case KC_QUOTE:
+      return true;
   }
   return false;
 }
