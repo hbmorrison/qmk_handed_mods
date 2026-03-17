@@ -160,10 +160,17 @@ void handed_mods_process_affected_key(uint16_t keycode, keyrecord_t *record) {
     // Combine the current modifiers and oneshot modifiers so that they can be
     // applied together.
 
+#ifdef HANDED_MODS_SAME_SIDE
+    if (handed_mods_is_left_key(record->event.key))
+      mods = left_mask | left_oneshot_mask;
+    else
+      mods = right_mask | right_oneshot_mask;
+#else
     if (handed_mods_is_left_key(record->event.key))
       mods = right_mask | right_oneshot_mask;
     else
       mods = left_mask | left_oneshot_mask;
+#endif
 
     // Clear the oneshot modifiers so that they will not be applied to
     // subsequent key presses. Both sets of oneshot modifiers are cleared
