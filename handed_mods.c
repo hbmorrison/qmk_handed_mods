@@ -2,18 +2,16 @@
 
 // Declare internal functions.
 
-void handed_mods_process_handed_mod_key(uint16_t, keyrecord_t *);
-void handed_mods_process_affected_key(uint16_t, keyrecord_t *);
-bool handed_mods_is_hold_action(uint16_t, keyrecord_t *);
+bool handed_mods_process_press(uint16_t, keyrecord_t *);
+bool handed_mods_process_release(uint16_t, keyrecord_t *);
+uint8_t handed_mods_get_mod_bit(uint16_t);
 bool handed_mods_get_interrupt(uint16_t);
 void handed_mods_set_interrupt(uint8_t);
 void handed_mods_clear_interrupt(uint16_t);
-uint8_t handed_mods_get_mod_bit(uint16_t);
 bool handed_mods_ignore_bare_shift(uint16_t);
+bool handed_mods_is_hold_action(uint16_t, keyrecord_t *);
 bool handed_mods_is_ignored_key(uint16_t);
 bool handed_mods_is_reset_key(uint16_t);
-bool handed_mods_is_left_key(keypos_t);
-bool handed_mods_oneshot_timer_exceeded(void);
 
 // Declare a timer for the oneshot modifiers.
 
@@ -23,15 +21,15 @@ static uint16_t handed_mods_oneshot_timer = 0;
 // are added to these mod masks, and then removed when the handed modifier key
 // is released.
 
-static uint8_t left_mask  = 0;
-static uint8_t right_mask = 0;
+static uint8_t handed_mods_mask  = 0;
 
 // When handed modifier keys are released without being interrupted by another
 // key press, then the associated mod bits are copied into these oneshot mod
 // masks before the mod bits are removed.
 
-static uint8_t left_oneshot_mask  = 0;
-static uint8_t right_oneshot_mask = 0;
+static uint8_t handed_mods_oneshot_mask = 0;
+
+static uint8_t handed_mods_applied_mask = 0;
 
 // When another key is pressed while the handed modifier key is active, its
 // interrupted state is set to true.
@@ -41,166 +39,129 @@ static bool handed_mods_ctl_interrupted = false;
 static bool handed_mods_alt_interrupted = false;
 static bool handed_mods_gui_interrupted = false;
 
-// Determine how key events will affect and be influenced by the handed
-// modifiers.
-
 bool process_record_handed_mods(uint16_t keycode, keyrecord_t *record) {
 
-  // Return when an ignored key is pressed.
+  if (handed_mods_get_mod_bit(keycode)) {
+    if (record->event.pressed)
+      return handed_mods_process_press(keycode, record);
+    else
+      return handed_mods_process_release(keycode, record);
+  }
+
+  // Return if the keycode is an ignored key.
 
   if (handed_mods_is_ignored_key(keycode))
     return true;
 
-  // Reset all of the mod masks when a reset key is pressed.
+  // Reset the handed modifiers state and return if the keycode is a reset key.
 
   if (handed_mods_is_reset_key(keycode)) {
-    left_mask = 0;
-    right_mask = 0;
-    left_oneshot_mask = 0;
-    right_oneshot_mask = 0;
+    handed_mods_mask = 0;
+    handed_mods_oneshot_mask = 0;
+    handed_mods_oneshot_timer = 0;
     return true;
   }
-
-  // Process handed modifier key actions and stop further processing of this key
-  // action.
-
-  switch (keycode) {
-    case HM_SFT:
-    case HM_CTL:
-    case HM_ALT:
-    case HM_GUI:
-      handed_mods_process_handed_mod_key(keycode, record);
-      return false;
-  }
-
-  // Process how the handed modifiers will affect other key actions.
-
-  handed_mods_process_affected_key(keycode, record);
-  return true;
-}
-
-// Clear any oneshot mods at the end of the scan if the oneshot timout has been
-// exceeded.
-
-void housekeeping_task_handed_mods(void) {
-  if (handed_mods_oneshot_timer_exceeded()) {
-    handed_mods_oneshot_timer = 0;
-    left_oneshot_mask = 0;
-    right_oneshot_mask = 0;
-  }
-}
-
-// Process key actions for handed modifier keys.
-
-void handed_mods_process_handed_mod_key(uint16_t keycode, keyrecord_t *record) {
-  uint8_t bit = handed_mods_get_mod_bit(keycode);
-  if (record->event.pressed) {
-
-    // If this action is a key press, clear the interrupt state for this handed
-    // modifier and add the modifier bit to the correct mask.
-
-    handed_mods_clear_interrupt(keycode);
-    if (handed_mods_is_left_key(record->event.key))
-      left_mask |= bit;
-    else
-      right_mask |= bit;
-
-    // Clear any pre-existing oneshot modifiers now that there is at least one
-    // handed modifier key being pressed.
-
-    left_oneshot_mask = 0;
-    right_oneshot_mask = 0;
-  } else {
-
-    // If this action is a key release, remove the mod bit from the correct mod
-    // mask.
-
-    if (handed_mods_is_left_key(record->event.key))
-      left_mask &= ~bit;
-    else
-      right_mask &= ~bit;
-
-    // If no other key has interrupted this handed modifier key press, then set
-    // the modifier as a oneshot. If the same oneshot modifier is currently
-    // active on the opposite side then it is cleared.
-
-    if (! handed_mods_get_interrupt(keycode)) {
-      if (handed_mods_is_left_key(record->event.key)) {
-        left_oneshot_mask |= bit;
-        right_oneshot_mask &= ~bit;
-      } else {
-        left_oneshot_mask &= ~bit;
-        right_oneshot_mask |= bit;
-      }
-
-      // Set the oneshot timer to the current time.
-
-#     if (defined(ONESHOT_TIMEOUT) && (ONESHOT_TIMEOUT > 0))
-      handed_mods_oneshot_timer = timer_read();
-#     endif
-    }
-  }
-}
-
-// Process key actions for other keys that will be affected by the handed
-// modifiers.
-
-void handed_mods_process_affected_key(uint16_t keycode, keyrecord_t *record) {
 
   // Return without affecting the state of the handed modifiers if this is a
   // hold action on a mod-tap or layer-tap key.
 
-  if (handed_mods_is_hold_action(keycode, record)) return;
-
-  // Only interested in key presses.
+  if (handed_mods_is_hold_action(keycode, record))
+    return true;
 
   if (record->event.pressed) {
-    uint8_t mods;
 
-    // Combine the current modifiers and oneshot modifiers so that they can be
-    // applied together.
+    // Apply any modifiers and oneshot modifiers together, then clear the
+    // oneshot modifiers so that the do not apply to subsequent key presses.
 
-#ifdef HANDED_MODS_SAME_SIDE
-    if (handed_mods_is_left_key(record->event.key))
-      mods = left_mask | left_oneshot_mask;
-    else
-      mods = right_mask | right_oneshot_mask;
-#else
-    if (handed_mods_is_left_key(record->event.key))
-      mods = right_mask | right_oneshot_mask;
-    else
-      mods = left_mask | left_oneshot_mask;
-#endif
-
-    // Clear the oneshot modifiers so that they will not be applied to
-    // subsequent key presses. Both sets of oneshot modifiers are cleared
-    // because key presses should clear all oneshot modifiers, even if the
-    // modifiers are not going to be applied to the key.
-
-    left_oneshot_mask = 0;
-    right_oneshot_mask = 0;
-
-    // Clear the oneshot modifier timer.
-
-    handed_mods_oneshot_timer = 0;
+    handed_mods_applied_mask = handed_mods_mask | handed_mods_oneshot_mask;
+    handed_mods_oneshot_mask = 0;
 
     // Remove the shift modifier if it appears on its own in the mod mask and is
-    // about to be applied to a key that should not be shifted.
+    // about to be applied to a key that should not be shifted. This prevents
+    // number and unshifted symbol key presses unexpectedly issuing their shifted
+    // varient.
 
-    if ((mods & ~SFT_MOD_BIT) == 0 && handed_mods_ignore_bare_shift(keycode))
-      mods = 0;
+    if ((handed_mods_applied_mask & ~SFT_MOD_BIT) == 0 && handed_mods_ignore_bare_shift(keycode))
+      handed_mods_applied_mask = 0;
 
-    // Set the modifiers so that they will only apply to the this key press.
+    // Set weak modifiers so that they will only apply to this key press.
 
-    if (mods)
-      register_weak_mods(mods);
+    if (handed_mods_applied_mask)
+      register_mods(handed_mods_applied_mask);
 
-    // Indicate that this key press has interrupted the currently active handed
-    // modifiers.
+    // Finally, indicate that this key press has interrupted the currently
+    // active modifiers.
 
-    handed_mods_set_interrupt(mods);
+    handed_mods_set_interrupt(handed_mods_applied_mask);
+  } else {
+    if (handed_mods_applied_mask) {
+      unregister_mods(handed_mods_applied_mask);
+      handed_mods_applied_mask = 0;
+    }
+  }
+
+  // Continue processing this record.
+
+  return true;
+}
+
+bool handed_mods_process_press(uint16_t keycode, keyrecord_t *record) {
+  uint8_t bit = handed_mods_get_mod_bit(keycode);
+
+  // Clear the interrupt state for this handed modifier.
+
+  handed_mods_clear_interrupt(keycode);
+
+  // Get the modifier bit associated with this handed modifier keycode and
+  // add it to the mask.
+
+  handed_mods_mask |= bit;
+
+  // Clear any pre-existing oneshot modifiers now that there is at least one
+  // handed modifier key being pressed.
+
+  handed_mods_oneshot_mask &= ~bit;
+
+  return true;
+}
+
+bool handed_mods_process_release(uint16_t keycode, keyrecord_t *record) {
+  uint8_t bit = handed_mods_get_mod_bit(keycode);
+
+  // Get the modifier bit associated with this handed modifier keycode and
+  // remove it from the mask.
+
+  handed_mods_mask &= ~bit;
+
+  // If this handed modifier key has been released without other keys being
+  // pressed in the interim, then set the modifier as a oneshot.
+
+  if (! handed_mods_get_interrupt(keycode))
+    handed_mods_oneshot_mask |= bit;
+
+  // If ONESHOT_TIMEOUT is defined, set the oneshot timer to the current time
+  // so that the oneshot modifiers can be cleared if they are unused.
+
+#if (defined(ONESHOT_TIMEOUT) && (ONESHOT_TIMEOUT > 0))
+  handed_mods_oneshot_timer = timer_read();
+#endif
+
+  return true;
+}
+
+// Clear the oneshot modifiers at the end of the scan if the oneshot timout has
+// been exceeded.
+
+#if (defined(ONESHOT_TIMEOUT) && (ONESHOT_TIMEOUT > 0))
+void housekeeping_task_handed_mods(void) {
+  if (handed_mods_oneshot_timer > 0) {
+    if (TIMER_DIFF_16(timer_read(), handed_mods_oneshot_timer) >= ONESHOT_TIMEOUT) {
+      handed_mods_oneshot_timer = 0;
+      handed_mods_oneshot_mask = 0;
+    }
   }
 }
+#endif
 
 // Return the mod bit associated with the given handed modifier key.
 
@@ -246,29 +207,6 @@ void handed_mods_set_interrupt(uint8_t bits) {
   if ((bits & GUI_MOD_BIT) > 0) handed_mods_gui_interrupted = true;
 }
 
-// Returns true if the given key event is a hold action associated with a
-// mod-tap or layer-tap key.
-
-bool handed_mods_is_hold_action(uint16_t keycode, keyrecord_t *record) {
-  switch (keycode) {
-    case QK_MOD_TAP ... QK_MOD_TAP_MAX:
-    case QK_LAYER_TAP ... QK_LAYER_TAP_MAX:
-      return ! record->tap.count;
-  }
-  return false;
-}
-
-#if (defined(ONESHOT_TIMEOUT) && (ONESHOT_TIMEOUT > 0))
-bool handed_mods_oneshot_timer_exceeded(void) {
-  return handed_mods_oneshot_timer > 0 \
-   && TIMER_DIFF_16(timer_read(), handed_mods_oneshot_timer) >= ONESHOT_TIMEOUT;
-}
-#else
-bool handed_mods_oneshot_timer_exceeded(void) {
-  return false;
-}
-#endif
-
 // Returns true if the shift modifier on its own should not be applied to the
 // given key. This is used to prevent accidental shifts in higher layers
 // producing unexpected symbols. By default the comma, full stop and slash
@@ -300,6 +238,18 @@ __attribute__((weak)) bool handed_mods_ignore_bare_shift(uint16_t keycode) {
   return false;
 }
 
+// Returns true if the given key event is a hold action associated with a
+// mod-tap or layer-tap key.
+
+bool handed_mods_is_hold_action(uint16_t keycode, keyrecord_t *record) {
+  switch (keycode) {
+    case QK_MOD_TAP ... QK_MOD_TAP_MAX:
+    case QK_LAYER_TAP ... QK_LAYER_TAP_MAX:
+      return ! record->tap.count;
+  }
+  return false;
+}
+
 // Override this function in keymap.c to return true if the given keycode should
 // be ignored during the handed modifier key processing.
 
@@ -317,16 +267,4 @@ __attribute__((weak)) bool handed_mods_is_reset_key(uint16_t keycode) {
       return true;
   }
   return false;
-}
-
-// By default, this module assumes that keys on the left side of the keyboard
-// are found in the lower half of the matrix, but some keyboards are wired
-// differently. For example, on the ziplzalp keyboard, keys on the left side are
-// found in even rows in the matrix and keys on the right side are found in odd
-// rows. This function can be overriden in keymap.c to handle different keyboard
-// matrix layouts. So, in the case of zilpzalp, this function should be
-// overriden to return "(key.row % 2) == 0".
-
-__attribute__((weak)) bool handed_mods_is_left_key(keypos_t key) {
-  return key.row < MATRIX_ROWS / 2;
 }

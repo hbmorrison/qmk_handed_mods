@@ -15,3 +15,5 @@
 // Define the module name so other modules can detect that it is available.
 
 #define HANDED_MODS_MODULE_AVAILABLE
+
+// #define HOLD_ON_OTHER_KEY_PRESS
